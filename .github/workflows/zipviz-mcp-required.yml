@@ -1,0 +1,60 @@
+name: ZipViz MCP required gate
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zipviz-mcp-gate-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Reject an unrecognized target
+        shell: bash
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/zipviz-mcp|Elusor8/.github) ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac
+
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/setup-node v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '20'
+          package-manager-cache: false
+
+      - name: Run the repository contract
+        shell: bash
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/zipviz-mcp)
+              npm ci
+              npm test
+              npm run build
+              ;;
+            Elusor8/.github)
+              python3 -m unittest discover -s tests -v
+              ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac
