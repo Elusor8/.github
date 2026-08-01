@@ -37,23 +37,23 @@ jobs:
 
       # actions/setup-node v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
         with:
           node-version: '20'
-          cache: npm
 
-      - name: Install locked dependencies
-        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
-        run: npm ci
-
-      - name: Test
-        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
-        run: npm test
-
-      - name: Build
-        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
-        run: npm run build
-
-      - name: Test central gate contract
-        if: env.REPOSITORY == 'Elusor8/.github'
-        run: python3 -m unittest discover -s tests -v
+      - name: Run the repository contract
+        shell: bash
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/zipviz-mcp)
+              npm ci
+              npm test
+              npm run build
+              ;;
+            Elusor8/.github)
+              python3 -m unittest discover -s tests -v
+              ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac

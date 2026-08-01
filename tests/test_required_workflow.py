@@ -34,6 +34,18 @@ class RequiredWorkflowTests(unittest.TestCase):
         self.assertIn('echo "::error::unrecognized required-workflow target: $REPOSITORY"', text)
         self.assertIn("exit 1", text)
 
+    def test_repository_contract_has_no_conditional_skip_path(self) -> None:
+        text = WORKFLOW.read_text()
+
+        self.assertNotIn("\n        if:", text)
+        self.assertIn('case "$REPOSITORY" in', text)
+        self.assertIn("Elusor8/zipviz-mcp)", text)
+        self.assertIn("Elusor8/.github)", text)
+        self.assertIn("npm ci", text)
+        self.assertIn("npm test", text)
+        self.assertIn("npm run build", text)
+        self.assertIn("python3 -m unittest discover -s tests -v", text)
+
     def test_workflow_has_one_read_only_permission_block_and_no_secret_access(self) -> None:
         text = WORKFLOW.read_text()
 
