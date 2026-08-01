@@ -12,14 +12,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: verify
-    if: github.repository == 'Elusor8/zipviz-mcp'
+  gate:
+    name: gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
+    env:
+      REPOSITORY: ${{ github.repository }}
     steps:
+      - name: Reject an unrecognized target
+        shell: bash
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/zipviz-mcp|Elusor8/.github) ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac
+
       # actions/checkout v4
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -27,31 +37,23 @@ jobs:
 
       # actions/setup-node v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
         with:
           node-version: '20'
           cache: npm
 
       - name: Install locked dependencies
+        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
         run: npm ci
 
       - name: Test
+        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
         run: npm test
 
       - name: Build
+        if: env.REPOSITORY == 'Elusor8/zipviz-mcp'
         run: npm run build
 
-  governance-self-test:
-    name: governance self-test
-    if: github.repository == 'Elusor8/.github'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      # actions/checkout v4
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-
       - name: Test central gate contract
+        if: env.REPOSITORY == 'Elusor8/.github'
         run: python3 -m unittest discover -s tests -v
