@@ -1,0 +1,63 @@
+name: inbox-cos required CI
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inbox-cos-required-${{ github.repository }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: inbox-cos test gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Reject unrecognized required-workflow target
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/inbox-cos|Elusor8/.github)
+              ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac
+
+      # actions/checkout v7.0.1; upstream action.yml uses node24.
+      - name: Check out pull-request source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0; upstream action.yml uses node24.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+
+      - name: Run the complete repository contract
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          case "$REPOSITORY" in
+            Elusor8/inbox-cos)
+              python -m pip install ".[dev]"
+              python -m pytest tests/ -q
+              ;;
+            Elusor8/.github)
+              python -m unittest discover -s tests -v
+              ;;
+            *)
+              echo "::error::unrecognized required-workflow target: $REPOSITORY"
+              exit 1
+              ;;
+          esac
