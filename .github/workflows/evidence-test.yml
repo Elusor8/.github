@@ -1,0 +1,58 @@
+name: evidence-test
+
+# A PR that touches a trust-boundary path must name a changed evidence test.
+# Meant to be enforced as an organization required workflow; this file is the only copy.
+# It reads the PR, and the target repository's own .github/evidence-test.json at the PR's
+# BASE commit, through the API. It never checks out pull-request code: the checkout below
+# is this central repository at the workflow's own commit, for the generic script only.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: evidence-test-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  evidence-test:
+    name: evidence-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reject a copy outside the central repository
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          case "$WORKFLOW_REF" in
+            Elusor8/.github/.github/workflows/evidence-test.yml@*) ;;
+            *)
+              echo "::error::evidence-test must run from Elusor8/.github, not $WORKFLOW_REF"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::workflow commit is not a full SHA; failing closed"
+            exit 1
+          fi
+
+      # actions/checkout v7.0.1: the central repository at the workflow's own commit, not the PR.
+      - name: Check out the central script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Elusor8/.github
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: evidence-test
+
+      - name: Check the named evidence test
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 evidence-test/check.py
