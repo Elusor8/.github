@@ -8,6 +8,14 @@ Each target repository keeps its own table at TABLE_PATH. It is read through the
 pull request's BASE commit, never the head, so a PR cannot change the table it is judged against.
 The table file is itself always a trust-boundary path.
 
+Renames, removals and test files:
+1. A renamed or copied file without its previous name fails closed. With the previous name, both
+   the source and the destination path are judged against the trust globs.
+2. Removing the table, or removing or renaming away a workflow, is a trust change. Other removed
+   files are not judged.
+3. A path that matches a test glob is not a trust match, except the table path and workflow paths,
+   which are never subtracted.
+
 Run by .github/workflows/evidence-test.yml with only the Python standard library. It never checks
 out pull-request code.
 """
@@ -26,6 +34,11 @@ from pathlib import Path
 
 TABLE_PATH = ".github/evidence-test.json"
 TABLE_CATEGORY = "evidence-test table"
+# Workflow paths are judged by the table like any other path, but removing one is always a trust change.
+WORKFLOW_GLOBS = [".github/workflows/**"]
+WORKFLOW_CATEGORY = "workflow removed"
+# GitHub's file statuses that carry a source path in previous_filename.
+MOVED = ("renamed", "copied")
 CATEGORIES = (
     "signing/verify",
     "key custody",
@@ -137,15 +150,35 @@ def evidence_paths(body: str | None) -> list[str]:
     return paths
 
 
+def is_protected(path: str) -> bool:
+    """The table path and workflow paths: never subtracted as tests, and their removal is a trust change."""
+    return path == TABLE_PATH or matches(path, WORKFLOW_GLOBS)
+
+
 def decide(table: dict, body: str | None, files: list[ChangedFile]) -> Result:
+    unsourced = [f.filename for f in files if f.status in MOVED and not f.previous_filename]
+    if unsourced:
+        return Result(False, [f"evidence-test: renamed or copied file without a previous name ({', '.join(sorted(unsourced))}); "
+                              "the source path cannot be judged, failing closed."])
+
     present = [f for f in files if f.status != "removed"]
     rules = {TABLE_CATEGORY: [TABLE_PATH], **table["trust_boundary"]}
     touched: dict[str, list[str]] = {}
-    for f in present:
-        candidates = [f.filename] + ([f.previous_filename] if f.status == "renamed" and f.previous_filename else [])
+    for f in files:
+        if f.status == "removed":
+            # Other removals are not judged; removing the table or a workflow is.
+            candidates = [f.filename] if is_protected(f.filename) else []
+            gone = f.filename
+        else:
+            candidates = [f.filename] + ([f.previous_filename] if f.status in MOVED else [])
+            gone = f.previous_filename if f.status == "renamed" else None
+        # A test-glob match is not a trust match, unless the path is protected.
+        candidates = [p for p in candidates if is_protected(p) or not matches(p, table["test_globs"])]
         for category, globs in rules.items():
             if any(matches(p, globs) for p in candidates):
                 touched.setdefault(category, []).append(f.filename)
+        if gone and matches(gone, WORKFLOW_GLOBS):
+            touched.setdefault(WORKFLOW_CATEGORY, []).append(gone)
 
     if not touched:
         return Result(True, ["evidence-test: no trust-boundary path changed."])
