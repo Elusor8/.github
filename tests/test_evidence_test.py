@@ -192,6 +192,121 @@ class DecisionTests(unittest.TestCase):
         self.assertIn("human reviewer must confirm", " ".join(result.messages))
 
 
+# Synthetic tables for the phase 2b rules. The paths are invented and describe no real repository.
+EMPTY = check.parse_table(json.dumps({**SAMPLE, "trust_boundary": {c: [] for c in check.CATEGORIES}}))
+OVERLAP = check.parse_table(json.dumps({
+    **SAMPLE,
+    "trust_boundary": {**SAMPLE["trust_boundary"], "auth": ["svc/login/**", ".github/workflows/**"]},
+    # Test globs that also cover the table and workflow paths, to prove those are never subtracted.
+    "test_globs": ["svc/**/*_test.py", "**/*.json", ".github/workflows/**"],
+}))
+
+
+class RenameAndCopyTests(unittest.TestCase):
+    def test_rename_without_a_previous_name_fails_closed(self) -> None:
+        result = check.decide(TABLE, "", [F("docs/notes.md", "renamed")])
+        self.assertFalse(result.ok)
+        text = " ".join(result.messages)
+        self.assertIn("docs/notes.md", text)
+        self.assertIn("failing closed", text)
+
+    def test_copy_without_a_previous_name_fails_closed(self) -> None:
+        self.assertFalse(check.decide(TABLE, "", [F("docs/copy.md", "copied", previous_filename="")]).ok)
+
+    def test_missing_previous_name_fails_even_with_valid_evidence(self) -> None:
+        files = [F("pkg/core.go", "modified"), F("spec/core_spec.go", "modified"), F("docs/x.md", "renamed")]
+        self.assertFalse(check.decide(TABLE, body("spec/core_spec.go"), files).ok)
+
+    def test_copy_from_a_trust_path_counts(self) -> None:
+        result = check.decide(TABLE, "", [F("docs/vault_copy.go", "copied", previous_filename="pkg/vault/keys.go")])
+        self.assertFalse(result.ok)
+        self.assertIn("key custody", " ".join(result.messages))
+
+    def test_rename_away_from_the_table_counts(self) -> None:
+        result = check.decide(EMPTY, "", [F("docs/old-table.json", "renamed", previous_filename=check.TABLE_PATH)])
+        self.assertFalse(result.ok)
+        self.assertIn(check.TABLE_CATEGORY, " ".join(result.messages))
+
+    def test_rename_between_untrusted_paths_still_passes(self) -> None:
+        self.assertTrue(check.decide(TABLE, "", [F("docs/b.md", "renamed", previous_filename="docs/a.md")]).ok)
+
+
+
+class ProtectedRemovalTests(unittest.TestCase):
+    def test_deletion_only_table_change_counts(self) -> None:
+        result = check.decide(EMPTY, "", [F(check.TABLE_PATH, "removed")])
+        self.assertFalse(result.ok)
+        self.assertIn(check.TABLE_CATEGORY, " ".join(result.messages))
+
+    def test_table_removal_passes_with_a_changed_named_test(self) -> None:
+        files = [F(check.TABLE_PATH, "removed"), F("spec/table_spec.go", "added")]
+        self.assertTrue(check.decide(EMPTY, body("spec/table_spec.go"), files).ok)
+
+    def test_workflow_removal_counts_even_with_an_empty_table(self) -> None:
+        result = check.decide(EMPTY, "", [F(".github/workflows/build.yml", "removed")])
+        self.assertFalse(result.ok)
+        text = " ".join(result.messages)
+        self.assertIn(check.WORKFLOW_CATEGORY, text)
+        self.assertIn(".github/workflows/build.yml", text)
+
+    def test_workflow_renamed_away_counts_as_removed(self) -> None:
+        result = check.decide(EMPTY, "", [F("docs/build.yml.txt", "renamed", previous_filename=".github/workflows/build.yml")])
+        self.assertFalse(result.ok)
+        self.assertIn(check.WORKFLOW_CATEGORY, " ".join(result.messages))
+
+    def test_workflow_copied_elsewhere_is_not_a_removal(self) -> None:
+        files = [F("docs/build.yml", "copied", previous_filename=".github/workflows/build.yml")]
+        self.assertTrue(check.decide(EMPTY, "", files).ok)
+
+    def test_removed_workflow_also_reports_its_table_category(self) -> None:
+        text = " ".join(check.decide(OVERLAP, "", [F(".github/workflows/build.yml", "removed")]).messages)
+        self.assertIn(check.WORKFLOW_CATEGORY, text)
+        self.assertIn("auth", text)
+
+    def test_other_removals_are_still_not_judged(self) -> None:
+        for path in ("pkg/login/session.go", ".github/notes.md", "docs/workflows/build.yml"):
+            with self.subTest(path=path):
+                self.assertTrue(check.decide(TABLE, "", [F(path, "removed")]).ok)
+
+    def test_this_repositorys_own_table_flags_a_workflow_removal(self) -> None:
+        own = check.parse_table((ROOT / check.TABLE_PATH).read_text())
+        self.assertFalse(check.decide(own, "", [F(".github/workflows/evidence-test.yml", "removed")]).ok)
+
+
+class TestGlobSubtractionTests(unittest.TestCase):
+    def test_test_file_under_a_directory_trust_glob_no_longer_triggers(self) -> None:
+        self.assertTrue(check.decide(OVERLAP, "", [F("svc/login/session_test.py", "modified")]).ok)
+
+    def test_non_test_file_in_the_same_directory_still_triggers(self) -> None:
+        self.assertFalse(check.decide(OVERLAP, "", [F("svc/login/session.py", "modified")]).ok)
+
+    def test_subtracted_test_file_is_still_valid_evidence(self) -> None:
+        files = [F("svc/login/session.py", "modified"), F("svc/login/session_test.py", "modified")]
+        self.assertTrue(check.decide(OVERLAP, body("svc/login/session_test.py"), files).ok)
+
+    def test_table_path_is_never_subtracted(self) -> None:
+        self.assertTrue(check.matches(check.TABLE_PATH, OVERLAP["test_globs"]))
+        result = check.decide(OVERLAP, "", [F(check.TABLE_PATH, "modified")])
+        self.assertFalse(result.ok)
+        self.assertIn(check.TABLE_CATEGORY, " ".join(result.messages))
+
+    def test_workflow_paths_are_never_subtracted(self) -> None:
+        path = ".github/workflows/build.yml"
+        self.assertTrue(check.matches(path, OVERLAP["test_globs"]))
+        for status in ("modified", "added", "removed"):
+            with self.subTest(status=status):
+                self.assertFalse(check.decide(OVERLAP, "", [F(path, status)]).ok)
+
+    def test_rename_from_trust_code_into_a_test_name_still_counts(self) -> None:
+        files = [F("svc/login/session_test.py", "renamed", previous_filename="svc/login/session.py")]
+        self.assertFalse(check.decide(OVERLAP, "", files).ok)
+
+    def test_test_only_pr_still_passes(self) -> None:
+        for table, path in ((TABLE, "spec/core_spec.go"), (OVERLAP, "svc/login/a_test.py"), (OVERLAP, "svc/other/b_test.py")):
+            with self.subTest(path=path):
+                self.assertTrue(check.decide(table, "", [F(path, "modified")]).ok)
+
+
 class FetchAndMainTests(unittest.TestCase):
     def _fake_get(self, pull: dict, pages: list[list[dict]], table: str | None):
         def fake(url: str, token: str):
@@ -278,6 +393,11 @@ class FetchAndMainTests(unittest.TestCase):
         code, output = self._run(self._pull(), [[{"filename": "pkg/vault/keys.go", "status": "modified"}]], json.dumps(SAMPLE))
         self.assertEqual(code, 1)
         self.assertIn("key custody", output)
+
+    def test_main_fails_closed_when_the_api_omits_the_previous_name(self) -> None:
+        code, output = self._run(self._pull(), [[{"filename": "docs/b.md", "status": "renamed"}]], json.dumps(SAMPLE))
+        self.assertEqual(code, 1)
+        self.assertIn("without a previous name", output)
 
 
 class WorkflowTests(unittest.TestCase):
